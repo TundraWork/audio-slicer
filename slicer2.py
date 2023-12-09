@@ -92,19 +92,19 @@ class Slicer:
                 continue
             # Clear recorded silence start if interval is not enough or clip is too short
             is_leading_silence = silence_start == 0 and i > self.max_sil_kept
-            need_slice_middle = i - silence_start >= self.min_interval and i - clip_start >= self.min_length
+            long_silence_length = i - silence_start >= self.max_sil_kept * 2
+            enough_clip_length = i - self.max_sil_kept * 2 - clip_start >= self.min_length if long_silence_length else i - self.max_sil_kept - clip_start >= self.min_length
+            need_slice_middle = i - silence_start >= self.min_interval and enough_clip_length
             if not is_leading_silence and not need_slice_middle:
                 silence_start = None
                 continue
             # Need slicing. Record the range of silent frames to be removed.
             if i - silence_start <= self.max_sil_kept:
                 pos = rms_list[silence_start: i + 1].argmin() + silence_start
-                if silence_start == 0:
-                    sil_tags.append((0, pos))
-                else:
+                if silence_start != 0:
                     sil_tags.append((pos, pos))
                 clip_start = pos
-            elif i - silence_start <= self.max_sil_kept * 2:
+            elif not long_silence_length:
                 pos = rms_list[i - self.max_sil_kept: silence_start + self.max_sil_kept + 1].argmin()
                 pos += i - self.max_sil_kept
                 pos_l = rms_list[silence_start: silence_start + self.max_sil_kept + 1].argmin() + silence_start
@@ -124,8 +124,15 @@ class Slicer:
                     sil_tags.append((pos_l, pos_r))
                 clip_start = pos_r
             silence_start = None
-        # Deal with trailing silence.
         total_frames = rms_list.shape[0]
+        # Cancel the last silence tag if the remaining clip is too short.
+        if clip_start >= silence_start:
+            if total_frames - clip_start < self.min_length:
+                sil_tags.pop()
+        else:
+            if silence_start - clip_start < self.min_length:
+                sil_tags.pop()
+        # Deal with trailing silence.
         if silence_start is not None and total_frames - silence_start >= self.min_interval:
             silence_end = min(total_frames, silence_start + self.max_sil_kept)
             pos = rms_list[silence_start: silence_end + 1].argmin() + silence_start
@@ -162,8 +169,9 @@ def main():
     out = args.out
     if out is None:
         out = os.path.dirname(os.path.abspath(args.audio))
-    import librosa
-    audio, sr = librosa.load(args.audio, sr=None)
+    audio, sr = soundfile.read(args.audio, dtype=np.float32)
+    if len(audio.shape) > 1:
+        audio = audio.T
     slicer = Slicer(
         sr=sr,
         threshold=args.db_thresh,
